@@ -1,0 +1,19 @@
+# Data besar (jangan di-commit, lihat README)
+dataset/*.csv
+dataset/*.zip
+!dataset/.gitkeep
+
+# Cache Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Environment & kredensial
+venv/
+.venv/
+.env
+kaggle.json
+
+# OS
+.DS_Store
+Thumbs.db

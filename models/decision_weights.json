@@ -1,0 +1,22 @@
+{
+  "model": "hist_gb_nbr",
+  "classes": [
+    "Grade 1",
+    "Grade 2",
+    "Grade 3",
+    "Grade 4",
+    "Grade 5"
+  ],
+  "weights": [
+    1.0,
+    1.0512710963760241,
+    1.1051709180756475,
+    1.0,
+    1.1051709180756475
+  ],
+  "macro_f1_argmax": 0.5758408157344743,
+  "macro_f1_tuned_cross": 0.5787435794464727,
+  "macro_f1_tuned_in_sample": 0.5774498525103902,
+  "n_holdout": 106693,
+  "holdout_fraction": 0.2
+}

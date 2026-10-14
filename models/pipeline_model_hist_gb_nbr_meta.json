@@ -1,0 +1,35 @@
+{
+  "model_name": "hist_gb_nbr",
+  "label": "HistGradientBoosting + fitur tetangga ID",
+  "params": {},
+  "n_train_rows": 533465,
+  "classes": [
+    "Grade 1",
+    "Grade 2",
+    "Grade 3",
+    "Grade 4",
+    "Grade 5"
+  ],
+  "train_seconds": 181.6,
+  "model_size_mb": 13.5,
+  "trained_at_utc": "2026-10-14T11:52:37+00:00",
+  "cv_result": {
+    "macro_f1_mean": 0.5128390364477676,
+    "macro_f1_std": 0.006009989903341359,
+    "accuracy_mean": 0.5423199999999999,
+    "fit_seconds_mean": 17.980912303924562,
+    "fold_scores": [
+      0.5024299449049996,
+      0.5173660205164011,
+      0.5097515575234588,
+      0.5183232933782772,
+      0.5163243659157011
+    ]
+  },
+  "versions": {
+    "python": "3.11.0",
+    "scikit-learn": "1.9.1",
+    "pandas": "3.0.6",
+    "numpy": "2.4.6"
+  }
+}

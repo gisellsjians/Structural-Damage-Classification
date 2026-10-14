@@ -122,3 +122,170 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         missing = [c for c in REQUIRED_COLS if c not in X.columns]
         if missing:
             raise ValueError(f"Kolom wajib tidak ditemukan: {missing}")
+
+
+# ---------------------------------------------------------------------------
+# Fitur tetangga berdasarkan urutan building_id (berbasis target, stateful)
+# ---------------------------------------------------------------------------
+NEIGHBOR_WINDOWS: tuple[int, ...] = (1, 3, 8, 25, 60, 150)
+NEIGHBOR_PROP_WINDOW: int = 5
+N_GRADES: int = 5
+
+
+def neighbor_feature_names(windows: tuple[int, ...] = NEIGHBOR_WINDOWS,
+                           prop_window: int = NEIGHBOR_PROP_WINDOW,
+                           n_classes: int = N_GRADES) -> list[str]:
+    """Nama kolom yang dihasilkan ``IDNeighborEncoder`` (urutannya sama dengan ``transform``).
+
+    Args:
+        windows: Ukuran jendela rata-rata (jumlah tetangga di tiap sisi).
+        prop_window: Ukuran jendela untuk proporsi kelas.
+        n_classes: Jumlah kelas target.
+
+    Returns:
+        Daftar nama kolom.
+    """
+    names = [f"nbr_mean_w{w}" for w in windows]
+    names += [f"nbr_p{c + 1}_w{prop_window}" for c in range(n_classes)]
+    names += ["nbr_prev_grade", "nbr_next_grade", "nbr_log_gap_prev", "nbr_log_gap_next"]
+    return names
+
+
+class IDNeighborEncoder(BaseEstimator, TransformerMixin):
+    """Fitur dari label bangunan berlabel yang ``building_id``-nya berdekatan.
+
+    ``building_id`` pada survei CBS dibentuk berurutan menurut wilayah dan waktu
+    pendataan, sehingga bangunan dengan ID bersebelahan cenderung berada di
+    lingkungan yang sama dan memiliki tingkat kerusakan yang mirip. Pada data
+    latih, korelasi kerusakan dua bangunan berurutan masih sekitar 0,25 setelah
+    rata-rata ward dikeluarkan. Transformer ini menangkap sinyal tersebut.
+
+    Fitur:
+        * ``nbr_mean_w{w}``       rata-rata grade ``2w`` tetangga berlabel terdekat
+                                  (``w`` di kiri dan ``w`` di kanan menurut urutan ID).
+        * ``nbr_p{c}_w{k}``       proporsi kelas ``c`` pada ``2k`` tetangga terdekat.
+        * ``nbr_prev_grade`` / ``nbr_next_grade``  grade tetangga langsung.
+        * ``nbr_log_gap_prev`` / ``nbr_log_gap_next``  log selisih ID ke tetangga langsung
+                                  (proxy kerapatan pendataan).
+
+    Pencegahan kebocoran (*leakage*): saat ``fit`` hanya label data latih yang
+    disimpan. Baris yang ID-nya sama dengan salah satu ID latih (yaitu baris latih
+    itu sendiri) **dikeluarkan dari tetangganya sendiri** (*leave-one-out*), sehingga
+    labelnya tidak bocor ke fiturnya. Baris baru (validasi atau uji) memakai seluruh
+    label latih. Karena langkah ini berada di dalam ``Pipeline``, validasi silang
+    tetap bebas bocor: pada tiap fold hanya label fold latih yang dipakai.
+
+    Catatan: fitur ini memanfaatkan struktur ID survei, bukan sifat fisik bangunan.
+    Fitur ini opsional pada ``make_model`` (``use_id_neighbors``).
+
+    Args:
+        windows: Ukuran jendela rata-rata (tetangga per sisi).
+        prop_window: Ukuran jendela proporsi kelas (tetangga per sisi).
+        id_col: Nama kolom ID.
+    """
+
+    def __init__(self, windows: tuple[int, ...] = NEIGHBOR_WINDOWS,
+                 prop_window: int = NEIGHBOR_PROP_WINDOW, id_col: str = "building_id"):
+        self.windows = windows
+        self.prop_window = prop_window
+        self.id_col = id_col
+
+    def fit(self, X: pd.DataFrame, y) -> "IDNeighborEncoder":
+        """Simpan ID latih terurut beserta jumlah kumulatif label.
+
+        Args:
+            X: DataFrame latih yang memuat kolom ID.
+            y: Label latih (string ``"Grade n"`` atau bilangan bulat). Urutan kelas
+                diambil dari ``np.unique`` sehingga kelas terkecil menjadi grade 1.
+
+        Returns:
+            ``self``.
+        """
+        ids = np.asarray(X[self.id_col], dtype=np.int64)
+        y_arr = np.asarray(y)
+        self.classes_ = np.unique(y_arr)
+        n_cls = len(self.classes_)
+        codes = np.searchsorted(self.classes_, y_arr)
+
+        order = np.argsort(ids, kind="stable")
+        self.ids_, codes = ids[order], codes[order]
+        onehot = np.zeros((len(codes), n_cls), dtype=np.float64)
+        onehot[np.arange(len(codes)), codes] = 1.0
+        self.grades_ = (codes + 1).astype(np.float64)
+        self.cum_onehot_ = np.vstack([np.zeros((1, n_cls)), np.cumsum(onehot, axis=0)])
+        self.cum_grade_ = np.concatenate([[0.0], np.cumsum(self.grades_)])
+        self.global_mean_ = float(self.grades_.mean())
+        return self
+
+    def _window_sum(self, cum: np.ndarray, pos: np.ndarray, self_flag: np.ndarray, k: int):
+        """Jumlah kumulatif pada jendela ``k`` tetangga per sisi, tanpa baris itu sendiri.
+
+        Args:
+            cum: Jumlah kumulatif (``n + 1`` baris; boleh berdimensi 2).
+            pos: Posisi sisip tiap baris pada urutan ID latih.
+            self_flag: 1 bila baris itu sendiri ada pada urutan (dikeluarkan), selain itu 0.
+            k: Jumlah tetangga per sisi.
+
+        Returns:
+            Tuple ``(jumlah, banyak_tetangga)``.
+        """
+        n = len(self.ids_)
+        lo = np.maximum(pos - k, 0)
+        hi_start = pos + self_flag
+        hi_end = np.minimum(hi_start + k, n)
+        count = (pos - lo) + (hi_end - hi_start)
+        total = cum[pos] - cum[lo] + cum[hi_end] - cum[hi_start]
+        return total, count
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Tambahkan fitur tetangga ke salinan ``X``.
+
+        Args:
+            X: DataFrame yang memuat kolom ID.
+
+        Returns:
+            Salinan ``X`` dengan kolom fitur tetangga (lihat
+            :func:`neighbor_feature_names`) di sebelah kanan.
+        """
+        q = np.asarray(X[self.id_col], dtype=np.int64)
+        n, n_cls = len(self.ids_), len(self.classes_)
+        pos = np.searchsorted(self.ids_, q, side="left")
+        is_self = (pos < n) & (self.ids_[np.minimum(pos, n - 1)] == q)
+        self_flag = is_self.astype(np.int64)
+        feats: dict[str, np.ndarray] = {}
+
+        for w in self.windows:
+            total, cnt = self._window_sum(self.cum_grade_, pos, self_flag, w)
+            feats[f"nbr_mean_w{w}"] = np.where(cnt > 0, total / np.maximum(cnt, 1), self.global_mean_)
+
+        c_sum, cnt = self._window_sum(self.cum_onehot_, pos, self_flag, self.prop_window)
+        props = c_sum / np.maximum(cnt, 1)[:, None]
+        for c in range(n_cls):
+            feats[f"nbr_p{c + 1}_w{self.prop_window}"] = props[:, c]
+
+        prev_idx, next_idx = pos - 1, pos + self_flag
+        has_prev, has_next = prev_idx >= 0, next_idx < n
+        feats["nbr_prev_grade"] = np.where(has_prev, self.grades_[np.clip(prev_idx, 0, n - 1)], self.global_mean_)
+        feats["nbr_next_grade"] = np.where(has_next, self.grades_[np.clip(next_idx, 0, n - 1)], self.global_mean_)
+        gap_prev = np.where(has_prev, q - self.ids_[np.clip(prev_idx, 0, n - 1)], 10 ** 12)
+        gap_next = np.where(has_next, self.ids_[np.clip(next_idx, 0, n - 1)] - q, 10 ** 12)
+        feats["nbr_log_gap_prev"] = np.log1p(gap_prev.astype(np.float64))
+        feats["nbr_log_gap_next"] = np.log1p(gap_next.astype(np.float64))
+
+        result = X.copy()
+        for name in neighbor_feature_names(self.windows, self.prop_window, n_cls):
+            result[name] = feats[name]
+        return result
+
+    def get_feature_names_out(self, input_features=None) -> np.ndarray:
+        """Nama kolom keluaran: kolom input diikuti fitur tetangga.
+
+        Args:
+            input_features: Nama kolom input; bila ``None`` dipakai daftar kosong.
+
+        Returns:
+            Array nama kolom bertipe object.
+        """
+        base = list(input_features) if input_features is not None else []
+        names = neighbor_feature_names(self.windows, self.prop_window, len(self.classes_))
+        return np.asarray(base + names, dtype=object)

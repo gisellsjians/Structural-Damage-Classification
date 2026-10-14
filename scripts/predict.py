@@ -37,7 +37,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.preprocess import ID_COL, TARGET  # noqa: E402
-from scripts.train import DEFAULT_DATA_DIR, DEFAULT_MODELS_DIR, load_model, load_params  # noqa: E402
+from scripts.train import (DECISION_WEIGHTS_FILE, DEFAULT_DATA_DIR, DEFAULT_MODELS_DIR,  # noqa: E402
+                           apply_class_weights, load_decision_weights, load_model, load_params)
 
 logger = logging.getLogger(__name__)
 
@@ -106,17 +107,23 @@ def check_versions(model_path: str | Path) -> list[str]:
 
 
 # prediksi
-def predict_in_chunks(model: Pipeline, X: pd.DataFrame, chunk_size: int = 50_000) -> pd.DataFrame:
+def predict_in_chunks(model: Pipeline, X: pd.DataFrame, chunk_size: int = 50_000,
+                      class_weights: np.ndarray | None = None) -> pd.DataFrame:
     """Buat prediksi per potongan data agar pemakaian memori terkendali.
-    Jika model mendukung ``predict_proba``, label dipilih sebagai kelas dengan
-    probabilitas tertinggi (setara dengan ``predict`` untuk model yang dipakai pada
-    proyek ini) dan kolom ``confidence`` berisi probabilitas tertinggi tersebut.
-    Jika tidak (mis. One-vs-One), dipakai ``predict`` dan ``confidence`` berisi NaN.
-    
+
+    Jika model mendukung ``predict_proba``, label dipilih sebagai
+    ``argmax(probabilitas * class_weights)``; tanpa ``class_weights`` ini setara ``argmax``
+    biasa. Kolom ``confidence`` berisi probabilitas (asli) kelas terpilih.
+    Jika model tidak mendukung ``predict_proba`` (mis. One-vs-One), dipakai ``predict``
+    dan ``confidence`` berisi NaN.
+
     Args:
         model: Pipeline terlatih (preprocessing + model).
-        X: Data uji mentah (termasuk ``building_id``; dibuang oleh ``DataCleaner``).
+        X: Data uji mentah (termasuk ``building_id``; dibuang oleh ``DataCleaner``
+            atau dipakai ``IDNeighborEncoder``).
         chunk_size: Jumlah baris per potongan.
+        class_weights: Pengali probabilitas per kelas (lihat ``scripts.train.tune_class_weights``).
+
     Returns:
         DataFrame berindeks sama dengan ``X`` dengan kolom ``damage_grade``,
         ``confidence``, dan satu kolom probabilitas per kelas (``p_<kelas>``)
@@ -130,19 +137,36 @@ def predict_in_chunks(model: Pipeline, X: pd.DataFrame, chunk_size: int = 50_000
         if use_proba:
             p = model.predict_proba(chunk)
             probas.append(p)
-            labels.append(classes[p.argmax(axis=1)])
+            labels.append(classes[apply_class_weights(p, class_weights)])
         else:
             labels.append(np.asarray(model.predict(chunk)))
 
     out = pd.DataFrame({TARGET: np.concatenate(labels)}, index=X.index)
     if use_proba:
         proba = np.vstack(probas)
-        out["confidence"] = proba.max(axis=1)
+        chosen = np.searchsorted(classes, out[TARGET].to_numpy())
+        out["confidence"] = proba[np.arange(len(proba)), chosen]
         for i, cls in enumerate(classes):
             out[f"p_{cls}"] = proba[:, i]
     else:
         out["confidence"] = np.nan
     return out
+
+
+def to_kaggle_labels(labels) -> pd.Series:
+    """Ubah label ``"Grade n"`` menjadi bilangan bulat ``n`` (format yang dibaca Kaggle).
+
+    Evaluator kompetisi membaca ``damage_grade`` sebagai angka; label teks ``"Grade 3"``
+    menyebabkan galat *\"The input string 'Grade' was not in a correct format\"*, walaupun
+    ``sample_submission.csv`` memakai teks.
+
+    Args:
+        labels: Label bertipe string ``"Grade n"`` (atau sudah angka).
+
+    Returns:
+        ``pd.Series`` bertipe integer.
+    """
+    return pd.Series(labels).astype(str).str.extract(r"(\d+)", expand=False).astype(int)
 
 
 # submission
@@ -226,8 +250,14 @@ def run_prediction(model_path: str | Path | None = None, model_name: str | None 
                    models_dir: str | Path = DEFAULT_MODELS_DIR,
                    data_dir: str | Path = DEFAULT_DATA_DIR,
                    output_path: str | Path = DEFAULT_SUBMISSION_PATH,
-                   chunk_size: int = 50_000) -> tuple[pd.DataFrame, pd.DataFrame]:
+                   chunk_size: int = 50_000,
+                   use_decision_weights: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Jalankan seluruh alur: muat model, prediksi, susun, validasi, dan simpan submission.
+
+    Bila ``models/decision_weights.json`` ada dan milik model yang sama, pilihan kelas memakai
+    ``argmax(probabilitas * bobot)``. Berkas yang ditulis berlabel angka 1-5 (lihat
+    :func:`to_kaggle_labels`).
+
     Args:
         model_path: Lokasi berkas ``.pkl``; jika ``None`` ditentukan oleh :func:`resolve_model_path`.
         model_name: Kunci model bila ``model_path`` tidak diberikan.
@@ -235,9 +265,12 @@ def run_prediction(model_path: str | Path | None = None, model_name: str | None 
         data_dir: Folder yang berisi ``test.csv`` dan ``sample_submission.csv``.
         output_path: Lokasi ``submission.csv``.
         chunk_size: Ukuran potongan untuk prediksi.
+        use_decision_weights: Pakai bobot keputusan bila tersedia.
+
     Returns:
-        Tuple ``(submission, predictions)``; ``predictions`` adalah keluaran
-        :func:`predict_in_chunks` (termasuk ``confidence``) berindeks sama dengan ``test.csv``.
+        Tuple ``(submission, predictions)``; ``submission`` adalah isi berkas yang ditulis
+        (label angka) dan ``predictions`` adalah keluaran :func:`predict_in_chunks`
+        (label ``"Grade n"``, ``confidence``, probabilitas) berindeks sama dengan ``test.csv``.
     """
     model_path = Path(model_path) if model_path else resolve_model_path(models_dir, model_name)
     for message in check_versions(model_path):
@@ -246,17 +279,25 @@ def run_prediction(model_path: str | Path | None = None, model_name: str | None 
     logger.info("Memuat model: %s", model_path)
     model = load_model(model_path)
 
+    weights = None
+    if use_decision_weights:
+        name = model_path.stem.removeprefix("pipeline_model_")
+        weights = load_decision_weights(Path(models_dir) / DECISION_WEIGHTS_FILE, name)
+        logger.info("Bobot keputusan: %s", "tidak dipakai (argmax)" if weights is None
+                    else np.round(weights, 3).tolist())
+
     data_dir = Path(data_dir)
     test = pd.read_csv(data_dir / "test.csv")
     sample = pd.read_csv(data_dir / "sample_submission.csv")
     logger.info("Data uji: %s baris", f"{len(test):,}")
 
     started = time.perf_counter()
-    predictions = predict_in_chunks(model, test, chunk_size=chunk_size)
+    predictions = predict_in_chunks(model, test, chunk_size=chunk_size, class_weights=weights)
     logger.info("Prediksi selesai dalam %.1f detik.", time.perf_counter() - started)
 
     submission = build_submission(test, predictions[TARGET], sample)
     validate_submission(submission, sample, [str(c) for c in model.classes_])
+    submission[TARGET] = to_kaggle_labels(submission[TARGET]).to_numpy()
     saved = save_submission(submission, output_path)
     logger.info("Submission tersimpan di %s (%s baris)", saved, f"{len(submission):,}")
     return submission, predictions
@@ -277,6 +318,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_SUBMISSION_PATH)
     parser.add_argument("--chunk-size", type=int, default=50_000)
+    parser.add_argument("--no-weights", action="store_true",
+                        help="Abaikan decision_weights.json dan pakai argmax biasa.")
     return parser.parse_args(argv)
 
 
@@ -289,7 +332,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     run_prediction(model_path=args.model_path, model_name=args.model_name,
                    models_dir=args.models_dir, data_dir=args.data_dir,
-                   output_path=args.output, chunk_size=args.chunk_size)
+                   output_path=args.output, chunk_size=args.chunk_size,
+                   use_decision_weights=not args.no_weights)
 
 
 if __name__ == "__main__":

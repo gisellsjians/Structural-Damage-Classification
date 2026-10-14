@@ -31,9 +31,11 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
 
 try:  # dipakai sebagai package: from scripts.preprocess import ...
-    from .feature_engineering import ENGINEERED_BIN_COLS, ENGINEERED_NUM_COLS, FeatureEngineer
+    from .feature_engineering import (ENGINEERED_BIN_COLS, ENGINEERED_NUM_COLS, FeatureEngineer,
+                                      IDNeighborEncoder, neighbor_feature_names)
 except ImportError:  # dijalankan langsung dari folder scripts/
-    from feature_engineering import ENGINEERED_BIN_COLS, ENGINEERED_NUM_COLS, FeatureEngineer
+    from feature_engineering import (ENGINEERED_BIN_COLS, ENGINEERED_NUM_COLS, FeatureEngineer,
+                                     IDNeighborEncoder, neighbor_feature_names)
 
 # konstanta
 TARGET = "damage_grade"
@@ -189,6 +191,8 @@ def build_preprocessor(
     use_ward: bool = True,
     ward_min_frequency: int = 100,
     use_engineered: bool = True,
+    use_id_neighbors: bool = False,
+    neighbor_params: dict | None = None,
 ) -> ColumnTransformer:
     """Susun ``ColumnTransformer`` untuk fitur numerik, biner, dan kategorik.
     Args:
@@ -203,6 +207,12 @@ def build_preprocessor(
         use_engineered: Jika ``False``, fitur turunan (``FeatureEngineer``) tidak
             dimasukkan ke model dan hanya empat kolom numerik mentah yang dipakai.
             Opsi ini digunakan untuk *ablation study*.
+        use_id_neighbors: Jika ``True``, kolom fitur tetangga ``building_id`` (keluaran
+            ``IDNeighborEncoder``) diteruskan ke model. Hanya berarti bila encoder tersebut
+            ada pada pipeline (lihat :func:`build_preprocessing_pipeline`).
+        neighbor_params: Argumen untuk ``IDNeighborEncoder`` (``windows``, ``prop_window``);
+            ``None`` memakai nilai bawaan. Harus sama dengan yang dipakai pada
+            :func:`build_preprocessing_pipeline` (dijamin bila lewat ``make_model_pipeline``).
     Returns:
         ``ColumnTransformer`` yang belum di-fit.
     Raises:
@@ -238,6 +248,9 @@ def build_preprocessor(
         transformers.insert(1, ("bin", "passthrough", BINARY_FEATURES))
     if use_ward:
         transformers.append(("ward", ward_encoder, HIGH_CARDINALITY_FEATURES))
+    if use_id_neighbors:
+        transformers.append(("nbr", SimpleImputer(strategy="median"),
+                             neighbor_feature_names(**(neighbor_params or {}))))
 
     # remainder="drop": kolom asli yang tidak terdaftar (mis. plinth_area_sq_ft) dibuang.
     return ColumnTransformer(transformers, remainder="drop")
@@ -248,15 +261,20 @@ def build_preprocessing_pipeline(**preprocessor_kwargs) -> Pipeline:
     Args:
         **preprocessor_kwargs: Argumen untuk :func:`build_preprocessor`
             (``scale``, ``encoding``, ``use_ward``, ``ward_min_frequency``,
-            ``use_engineered``).
+            ``use_engineered``, ``use_id_neighbors``, ``neighbor_params``).
     Returns:
         ``Pipeline`` dengan langkah ``clean`` -> ``features`` -> ``preprocess``.
+        Bila ``use_id_neighbors=True``, langkah ``id_neighbors`` (``IDNeighborEncoder``)
+        ditempatkan paling awal karena membutuhkan kolom ``building_id``.
     """
-    return Pipeline([
+    steps = [
         ("clean", DataCleaner()),
         ("features", FeatureEngineer()),
         ("preprocess", build_preprocessor(**preprocessor_kwargs)),
-    ])
+    ]
+    if preprocessor_kwargs.get("use_id_neighbors", False):
+        steps.insert(0, ("id_neighbors", IDNeighborEncoder(**(preprocessor_kwargs.get("neighbor_params") or {}))))
+    return Pipeline(steps)
 
 
 def make_model_pipeline(estimator, **preprocessor_kwargs) -> Pipeline:

@@ -1,10 +1,5 @@
 {
-  "model": "random_forest",
-  "params": {
-    "model__n_estimators": 150,
-    "model__min_samples_leaf": 0.0001,
-    "model__max_features": 0.5,
-    "model__max_depth": 30
-  },
-  "cv_macro_f1": 0.49015788265896154
+  "model": "hist_gb_nbr",
+  "params": {},
+  "cv_macro_f1": 0.5128390364477676
 }

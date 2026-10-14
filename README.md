@@ -33,7 +33,7 @@ structural-damage-classification/
 ├── requirements.txt
 ├── setup.bat                      # pemasangan environment otomatis (Windows)
 │
-├── dataset/                          
+├── data/                          
 │   ├── train.csv
 │   ├── test.csv
 │   ├── sample_submission.csv
@@ -98,14 +98,14 @@ python -m ipykernel install --user --name structural-damage --display-name "Pyth
 Jika PowerShell menolak aktivasi karena *execution policy*, jalankan sekali `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, atau panggil `venv\Scripts\python.exe` secara langsung tanpa aktivasi.
 
 ### 3.3 Mengunduh data
-Data **tidak disertakan** pada repositori (berukuran besar dan tunduk pada aturan kompetisi; `dataset/*.csv` terdaftar di `.gitignore`).
+Data **tidak disertakan** pada repositori (berukuran besar dan tunduk pada aturan kompetisi; `data/*.csv` terdaftar di `.gitignore`).
 
-- **Melalui web:** buka halaman kompetisi → tab **Data** → **Download All**, lalu ekstrak `train.csv`, `test.csv`, `sample_submission.csv`, dan `metadata.csv` ke folder `dataset/`.
+- **Melalui web:** buka halaman kompetisi → tab **Data** → **Download All**, lalu ekstrak `train.csv`, `test.csv`, `sample_submission.csv`, dan `metadata.csv` ke folder `data/`.
 - **Melalui command line** (membutuhkan `kaggle.json`):
   ```bash
   kaggle competitions download -c structural-damage-classification -p dataset
   ```
-  Ekstrak berkas zip yang dihasilkan ke dalam folder `dataset/`.
+  Ekstrak berkas zip yang dihasilkan ke dalam folder `data/`.
 
 ### 3.4 Menjalankan melalui notebook
 Pilih kernel **Python (venv)**, kemudian jalankan berurutan (*Run All*):
@@ -203,7 +203,7 @@ Seluruh langkah berada dalam satu `Pipeline` sehingga parameter yang dipelajari 
 | Tidak menggunakan Neural Network | Kandidat: regresi logistik, Random Forest, HistGradientBoosting |
 | Pipeline dan `ColumnTransformer` pada preprocessing, training, dan tuning | `scripts/preprocess.py`, `scripts/train.py`; tuning dilakukan pada pipeline lengkap |
 | Docstring pada setiap fungsi/kelas `.py` | Seluruh fungsi dan kelas pada `scripts/` berdocstring |
-| `.gitignore` mengabaikan `dataset/*.csv` | Ya |
+| `.gitignore` mengabaikan `data/*.csv` | Ya |
 | Cara unduh data didokumentasikan | Bagian 3.3 |
 | Laporan interpretasi pada README | Bagian 6 |
 

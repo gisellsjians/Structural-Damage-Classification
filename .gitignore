@@ -1,7 +1,7 @@
-# Data besar (jangan di-commit, lihat README)
-dataset/*.csv
-dataset/*.zip
-!dataset/.gitkeep
+# Data besar (jangan di-commit, unduh dari Kaggle - lihat README)
+data/*.csv
+data/*.zip
+!data/.gitkeep
 
 # Cache Python
 __pycache__/
